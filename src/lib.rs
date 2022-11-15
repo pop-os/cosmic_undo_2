@@ -23,10 +23,12 @@ pub enum Action<T> {
     Undo(T),
 }
 
-/// Store the list of commads executed by the user.
+/// Store a list of [commands](CommandItem) to undo and redo.
 ///
-/// Commands are added by invoking [`push`](#method.push) method. [`undo`](#method.undo) and [`redo`](#method.redo) return a list
-/// of [`Action<T>`] that the application must execute.
+/// Commands are added by invoking [`push`](#method.push) method. [`undo`](#method.undo) and
+/// [`redo`](#method.redo) return a list of [`Action<T>`] that the application must execute.
+///
+/// To see a full functional example, read [How to use it](index.html#how-to-use-it).
 ///
 /// # Example
 /// ```
@@ -119,9 +121,9 @@ pub type UndoIter<'a, T> = ActionIter<'a, T, std::iter::Rev<std::slice::Iter<'a,
 /// Iterator of actions returned by [Commands::push](Commands#method.redo)
 pub type RedoIter<'a, T> = ActionIter<'a, T, std::slice::Iter<'a, Action<usize>>>;
 
-/// The items store in [Commands].
+/// The items stored in [Commands].
 ///
-/// The list of CommandItem is accessible by dereferencing
+/// The list of `CommandItem` is accessible by dereferencing
 /// the command list.
 ///
 /// *NB*: The value inside the Undo variant is the number

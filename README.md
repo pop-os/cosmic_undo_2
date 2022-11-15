@@ -45,7 +45,7 @@ through the sequence of command that builds the state.
   2. user-friendly compared to complex undo trees.
   3. optimized implementation: no commands are ever copied.
   4. very lightweight, dumb and simple.
-  5. possibility to merge commands.
+  5. possibility to merge and splice commands.
 
 ## How to use it 
 
@@ -240,6 +240,10 @@ assert_eq!(editor.text, "az1");
 editor.redo();
 assert_eq!(editor.text, "az12");
 ```
+
+## Crate features
+
+`serde`: enabled by default
 
 [zaboople/klonk]:https://github.com/zaboople/klonk/blob/master/TheGURQ.md
 
