@@ -116,9 +116,9 @@ pub struct ActionIter<'a, T, It> {
     commands: &'a [CommandItem<T>],
     to_do: It,
 }
-/// Iterator of actions returned by [Commands::push](Commands#method.undo)
+/// Iterator of actions returned by [Commands::undo](Commands#method.undo)
 pub type UndoIter<'a, T> = ActionIter<'a, T, std::iter::Rev<std::slice::Iter<'a, Action<usize>>>>;
-/// Iterator of actions returned by [Commands::push](Commands#method.redo)
+/// Iterator of actions returned by [Commands::redo](Commands#method.redo)
 pub type RedoIter<'a, T> = ActionIter<'a, T, std::slice::Iter<'a, Action<usize>>>;
 
 /// The items stored in [Commands].
