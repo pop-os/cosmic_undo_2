@@ -1,8 +1,12 @@
 #! [doc = include_str!("../README.md")]
+use core::borrow::Borrow;
 use core::iter::FusedIterator;
 use core::ops::ControlFlow;
-use core::ops::Deref;
+use core::ops::{Deref, Index};
+use core::option;
 use derivative::Derivative;
+use std::slice::SliceIndex;
+use std::{slice, vec};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -54,12 +58,19 @@ pub enum Action<T> {
 /// let v: Vec<_> = commands.undo().collect();
 /// assert_eq!(v, [Action::Do(&Command::A), Action::Do(&Command::B)]);
 /// ```
-#[derive(Default, Derivative)]
+///
+/// # Representation
+///
+/// `Commands` owns a slice of [CommandItem] that is accesible
+/// by dereferencing the command.
+///
+/// It also
+#[derive(Clone, Default, Derivative)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derivative(Debug)]
+#[derivative(Debug, PartialEq, Eq, Hash)]
 pub struct Commands<T> {
     commands: Vec<CommandItem<T>>,
-    #[derivative(Debug = "ignore")]
+    #[derivative(Debug = "ignore", PartialEq = "ignore", Hash = "ignore")]
     #[cfg_attr(feature = "serde", serde(skip))]
     undo_cache: Vec<Action<usize>>,
 }
@@ -78,6 +89,22 @@ pub struct Merge<'a, T> {
     pub start: IterRealized<'a, T>,
     pub end: IterRealized<'a, T>,
     pub command: Option<T>,
+}
+
+/// Specify a splice when calling [Commands::splice](Commands#method.splice)
+///
+/// The `start` and `end` parameters specifies the slice of command the will
+/// be removed during the splice. But note that [IterRealized] iterate from the newest
+/// to the oldest command, so the slice is reversed.
+///
+/// The `start` member designate passed the end of the slice, `end` is the beginning
+/// of the slice. The removed slice is then replaced by the sequence of
+/// commands denoted by `commands`.
+#[derive(Debug)]
+pub struct Splice<'a, T, I: IntoIterator<Item = T>> {
+    pub start: IterRealized<'a, T>,
+    pub end: IterRealized<'a, T>,
+    pub commands: I,
 }
 
 #[derive(Derivative, Debug)]
@@ -145,6 +172,14 @@ impl<T> Commands<T> {
             commands: vec![],
             undo_cache: vec![],
         }
+    }
+    /// The capacity of the underlying storage
+    pub fn capacity(&self) -> usize {
+        self.commands.capacity()
+    }
+    /// Reserve space for new commands
+    pub fn reserve(&mut self, additional: usize) {
+        self.commands.reserve(additional)
     }
     /// Add the command `T`
     /// use undo_2::{Action, Commands};
@@ -596,34 +631,112 @@ impl<T> Commands<T> {
     ///     B,
     ///     AB,
     /// }
+    ///
     /// use Command::*;
+    ///
     /// fn is_ab<'a>(mut it: IterRealized<'a, Command>) -> (bool, IterRealized<'a, Command>) {
-    ///     let cond = it.next() == Some(&Command::B) && it.next() == Some(&Command::A);
+    ///     let cond = it.next() == Some(&B) && it.next() == Some(&A);
     ///     (cond, it)
     /// }
-    /// {
-    ///     let mut commands = Commands::new();
-    ///     commands.push(Command::A);
-    ///     commands.push(Command::B);
     ///
-    ///     commands.merge(|start| {
-    ///         if let (true, end) = is_ab(start.clone()) {
-    ///             ControlFlow::Continue(Some(Merge {
-    ///                 start,
-    ///                 end,
-    ///                 command: Some(Command::AB),
-    ///             }))
-    ///         } else {
-    ///             ControlFlow::Continue(None)
-    ///         }
-    ///     });
-    ///     assert_eq!(&*commands, &[AB.into()]);
-    /// }
+    ///
+    /// let mut commands = Commands::new();
+    /// commands.push(A);
+    /// commands.push(B);
+    ///
+    /// commands.merge(|start| {
+    ///     if let (true, end) = is_ab(start.clone()) {
+    ///         ControlFlow::Continue(Some(Merge {
+    ///             start,
+    ///             end,
+    ///             command: Some(AB),
+    ///         }))
+    ///     } else {
+    ///         ControlFlow::Continue(None)
+    ///     }
+    /// });
+    ///
+    /// assert_eq!(&*commands, &[AB.into()]);
     /// ```
     pub fn merge<F>(&mut self, mut f: F)
     where
         for<'a> F:
             FnMut(IterRealized<'a, T>) -> ControlFlow<Option<Merge<'a, T>>, Option<Merge<'a, T>>>,
+    {
+        use ControlFlow::*;
+        self.splice(|it| match f(it) {
+            Continue(c) => Continue(c.map(|m| m.into())),
+            Break(c) => Break(c.map(|m| m.into())),
+        })
+    }
+
+    /// Replace a sequence of command by an other. This is a generalization of
+    /// [Commands::merge](Commands#method.merge)
+    ///
+    /// The parameter `f` takes as an input a [IterRealized], and returns a
+    /// [`std::ops::ControlFlow<Option<Splice>, Option<Splice>>`](std::ops::ControlFlow). If the returned value
+    /// contain a `Some(splice)`[Splice], the action specified by `splice` is then realized.
+    ///
+    /// The function is excuted recursively while it returns a `ControlFlow::Continue(_)` with a
+    /// realized iterator that is advanced by 1 if no merge command is returned, or set to the
+    /// element previous to the last merge command.
+    ///
+    /// The execution stops when the functions either returned `ControlFlow::Break` or after the
+    /// last element in the iteration.
+    ///
+    /// *Remember*: the element are iterated from the newest to the oldest (in reverse order).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use undo_2::{Commands, CommandItem, Merge, IterRealized};
+    /// use std::ops::ControlFlow;
+    ///
+    /// // we suppose that A, B, C is equivalent to D,E
+    /// #[derive(Eq, PartialEq, Debug)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C,
+    ///     D,
+    ///     E,
+    /// }
+    ///
+    /// use Command::*;
+    ///
+    /// fn is_abc<'a>(mut it: IterRealized<'a, Command>) -> (bool, IterRealized<'a, Command>) {
+    ///     let cond = it.next() == Some(&C) && it.next() == Some(&B) && it.next() == Some(&A);
+    ///     (cond, it)
+    /// }
+    ///
+    ///
+    /// let mut commands = Commands::new();
+    /// commands.push(A);
+    /// commands.push(B);
+    /// commands.push(C);
+    ///
+    /// commands.merge(|start| {
+    ///     if let (true, end) = is_ab(start.clone()) {
+    ///         ControlFlow::Continue(Some(Splice {
+    ///             start,
+    ///             end,
+    ///             command: [D,E],
+    ///         }))
+    ///     } else {
+    ///         ControlFlow::Continue(None)
+    ///     }
+    /// });
+    ///
+    /// assert_eq!(&*commands, &[D.into(), E.into()]);
+    /// ```
+    pub fn splice<F, I, J>(&mut self, mut f: F)
+    where
+        F: for<'a> FnMut(
+            IterRealized<'a, T>,
+        )
+            -> ControlFlow<Option<Splice<'a, T, I>>, Option<Splice<'a, T, J>>>,
+        I: IntoIterator<Item = T>,
+        J: IntoIterator<Item = T>,
     {
         use ControlFlow::*;
         let mut start = self.commands.len();
@@ -636,15 +749,15 @@ impl<T> Commands<T> {
                 Continue(Some(m)) => {
                     let rev_start = m.start.current;
                     let rev_end = m.end.current;
-                    let command = m.command;
-                    self.do_merge(rev_start, rev_end, command);
+                    let commands = m.commands;
+                    self.do_splice(rev_start, rev_end, commands);
                     start = rev_end;
                 }
                 Break(Some(m)) => {
                     let rev_start = m.start.current;
                     let rev_end = m.end.current;
-                    let command = m.command;
-                    self.do_merge(rev_start, rev_end, command);
+                    let commands = m.commands;
+                    self.do_splice(rev_start, rev_end, commands);
                     break;
                 }
                 Break(None) => break,
@@ -652,15 +765,14 @@ impl<T> Commands<T> {
             }
         }
     }
-    pub fn do_merge(&mut self, rev_start: usize, rev_end: usize, command: Option<T>) {
+    pub fn do_splice<I>(&mut self, rev_start: usize, rev_end: usize, commands: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
         let end_i = rev_start;
         let start_i = rev_end;
-        if let Some(command) = command {
-            self.commands[start_i] = CommandItem::Command(command);
-            self.commands.drain(start_i + 1..end_i);
-        } else {
-            self.commands.drain(start_i..end_i);
-        }
+        self.commands
+            .splice(start_i..end_i, commands.into_iter().map(|c| c.into()));
     }
 }
 
@@ -668,6 +780,52 @@ impl<T> Deref for Commands<T> {
     type Target = [CommandItem<T>];
     fn deref(&self) -> &Self::Target {
         &self.commands
+    }
+}
+impl<T> AsRef<[CommandItem<T>]> for Commands<T> {
+    fn as_ref(&self) -> &[CommandItem<T>] {
+        self
+    }
+}
+impl<T> Borrow<[CommandItem<T>]> for Commands<T> {
+    fn borrow(&self) -> &[CommandItem<T>] {
+        self
+    }
+}
+impl<T> Extend<T> for Commands<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.commands.extend(iter.into_iter().map(|c| c.into()))
+    }
+}
+impl<T> FromIterator<T> for Commands<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self {
+            commands: iter.into_iter().map(|c| c.into()).collect(),
+            undo_cache: vec![],
+        }
+    }
+}
+impl<'a, T> IntoIterator for &'a Commands<T> {
+    type Item = &'a CommandItem<T>;
+    type IntoIter = slice::Iter<'a, CommandItem<T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.commands.iter()
+    }
+}
+impl<'a, T> IntoIterator for Commands<T> {
+    type Item = CommandItem<T>;
+    type IntoIter = std::vec::IntoIter<CommandItem<T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.commands.into_iter()
+    }
+}
+impl<T, I> Index<I> for Commands<T>
+where
+    I: SliceIndex<[CommandItem<T>]>,
+{
+    type Output = <I as SliceIndex<[CommandItem<T>]>>::Output;
+    fn index(&self, index: I) -> &Self::Output {
+        self.commands.index(index)
     }
 }
 
@@ -734,6 +892,16 @@ impl<T> Action<&mut T> {
 impl<T> From<T> for CommandItem<T> {
     fn from(value: T) -> Self {
         CommandItem::Command(value)
+    }
+}
+
+impl<'a, T> From<Merge<'a, T>> for Splice<'a, T, option::IntoIter<T>> {
+    fn from(m: Merge<'a, T>) -> Self {
+        Splice {
+            start: m.start,
+            end: m.end,
+            commands: m.command.into_iter(),
+        }
     }
 }
 
