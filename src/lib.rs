@@ -2,8 +2,10 @@
 use core::iter::FusedIterator;
 use core::ops::ControlFlow;
 use core::ops::Deref;
-use core::slice;
 use derivative::Derivative;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// Action that the application must performed to undo
 /// or redo
@@ -53,17 +55,19 @@ pub enum Action<T> {
 /// assert_eq!(v, [Action::Do(&Command::A), Action::Do(&Command::B)]);
 /// ```
 #[derive(Default, Derivative)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derivative(Debug)]
 pub struct Commands<T> {
     commands: Vec<CommandItem<T>>,
     #[derivative(Debug = "ignore")]
+    #[cfg_attr(feature = "serde", serde(skip))]
     undo_cache: Vec<Action<usize>>,
 }
 
 /// Specify a merge when calling [Commands::merge](Commands#method.merge)
 ///
 /// The `start` and `end` parameters specifies the slice of command the will
-/// be removed during the merge. But note that [RealizedIter] iterate from the newest
+/// be removed during the merge. But note that [IterRealized] iterate from the newest
 /// to the oldest command, so the slice is reversed.
 ///
 /// The `start` member designate passed the end of the slice, `end` is the beginning
@@ -71,8 +75,8 @@ pub struct Commands<T> {
 /// the `command` is `Some(c)` the slice will be replace by `c`.
 #[derive(Debug)]
 pub struct Merge<'a, T> {
-    pub start: RealizedIter<'a, T>,
-    pub end: RealizedIter<'a, T>,
+    pub start: IterRealized<'a, T>,
+    pub end: IterRealized<'a, T>,
     pub command: Option<T>,
 }
 
@@ -88,7 +92,6 @@ pub type UndoIter<'a, T> = ActionIter<'a, T, std::iter::Rev<std::slice::Iter<'a,
 /// Iterator of actions returned by [Commands::push](Commands#method.redo)
 pub type RedoIter<'a, T> = ActionIter<'a, T, std::slice::Iter<'a, Action<usize>>>;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 /// The items store in [Commands].
 ///
 /// The list of CommandItem is accessible by dereferencing
@@ -120,6 +123,8 @@ pub type RedoIter<'a, T> = ActionIter<'a, T, std::slice::Iter<'a, Action<usize>>
 /// commands.undo();
 /// assert_eq!(*commands, [A.into(), Undo(0),A.into(),Undo(1)]);
 /// ```
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CommandItem<T> {
     Command(T),
     Undo(usize),
@@ -127,12 +132,11 @@ pub enum CommandItem<T> {
 
 #[derive(Derivative, Debug)]
 #[derivative(Clone(bound = ""))]
-pub struct RealizedIter<'a, T> {
+/// The type of the iterator returned by [Commands::iter_realized](Commands#method.iter_realized).
+pub struct IterRealized<'a, T> {
     commands: &'a [CommandItem<T>],
     current: usize,
 }
-
-pub type Iter<'a, T> = slice::Iter<'a, CommandItem<T>>;
 
 impl<T> Commands<T> {
     /// Create a new empty command sequence of type `T`.
@@ -159,45 +163,11 @@ impl<T> Commands<T> {
     ///
     /// commands.push(Command::A);
     ///
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&Command::A]);
     /// ```
     pub fn push(&mut self, command: T) {
         self.commands.push(CommandItem::Command(command));
-    }
-    /// Return `true` if the last action is an undo.
-    ///
-    /// # Example
-    /// ```
-    /// use undo_2::Commands;
-    ///
-    /// #[derive(Debug, Eq, PartialEq)]
-    /// enum Command {
-    ///     A,
-    ///     B,
-    /// }
-    ///
-    /// let mut commands = Commands::new();
-    /// assert!(!commands.is_undoing());
-    ///
-    /// commands.push(Command::A);
-    /// assert!(!commands.is_undoing());
-    ///
-    /// commands.undo();
-    /// assert!(commands.is_undoing());
-    ///
-    /// commands.push(Command::A);
-    /// commands.push(Command::A);
-    /// commands.undo();
-    /// commands.undo();
-    /// assert!(commands.is_undoing());
-    /// commands.redo();
-    /// assert!(commands.is_undoing());
-    /// commands.redo();
-    /// assert!(!commands.is_undoing());
-    /// ```
-    pub fn is_undoing(&self) -> bool {
-        matches!(self.commands.last(), Some(CommandItem::Undo(_)))
     }
 
     /// Return an iterator over a sequence of actions to be performed by the client application to
@@ -284,6 +254,40 @@ impl<T> Commands<T> {
             _ => RedoIter::new(),
         }
     }
+    /// Return `true` if the last action is an undo.
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::Commands;
+    ///
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    /// }
+    ///
+    /// let mut commands = Commands::new();
+    /// assert!(!commands.is_undoing());
+    ///
+    /// commands.push(Command::A);
+    /// assert!(!commands.is_undoing());
+    ///
+    /// commands.undo();
+    /// assert!(commands.is_undoing());
+    ///
+    /// commands.push(Command::A);
+    /// commands.push(Command::A);
+    /// commands.undo();
+    /// commands.undo();
+    /// assert!(commands.is_undoing());
+    /// commands.redo();
+    /// assert!(commands.is_undoing());
+    /// commands.redo();
+    /// assert!(!commands.is_undoing());
+    /// ```
+    pub fn is_undoing(&self) -> bool {
+        matches!(self.commands.last(), Some(CommandItem::Undo(_)))
+    }
     /// Clear all the commands.
     ///
     /// # Example
@@ -304,7 +308,7 @@ impl<T> Commands<T> {
     ///
     /// commands.clear();
     ///
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v.len(), 0);
     /// ```
     pub fn clear(&mut self) {
@@ -346,7 +350,7 @@ impl<T> Commands<T> {
     ///
     /// commands.remove_until(|(t, _)| *t > t1);
     ///
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&(t4,Command::E),&(t3,Command::D), &(t2,Command::C)]);
     ///
     ///
@@ -367,7 +371,7 @@ impl<T> Commands<T> {
     /// commands.undo();//undo the 2 undos
     ///
     /// // B not removed because it is covered by an undo
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&(t2,Command::C),&(t1,Command::B)]);
     ///
     /// ```
@@ -414,7 +418,7 @@ impl<T> Commands<T> {
     ///
     /// commands.keep_last(2);
     ///
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&(t4,Command::E),&(t3,Command::D)]);
     ///
     ///
@@ -437,7 +441,7 @@ impl<T> Commands<T> {
     /// commands.undo();//undo the 2 undos
     ///
     /// // B not removed because it is covered by an undo
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&(t2,Command::C),&(t1,Command::B)]);
     /// ```
     pub fn keep_last(&mut self, count: usize) {
@@ -479,7 +483,7 @@ impl<T> Commands<T> {
     ///
     /// commands.remove_first(3);
     ///
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&(t4,Command::E),&(t3,Command::D)]);
     ///
     ///
@@ -502,7 +506,7 @@ impl<T> Commands<T> {
     /// commands.undo();//undo the 2 undos
     ///
     /// // B not removed because it is covered by an undo
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&(t2,Command::C),&(t1,Command::B)]);
     /// ```
     pub fn remove_first(&mut self, i: usize) {
@@ -523,13 +527,14 @@ impl<T> Commands<T> {
     ///
     /// *Realized commands* are commands that are not undone. For example assuming
     /// the folowing sequence of commands:
-    ///  | Command | State |
-    ///  |---------|-------|
-    ///  | Init    |       |
-    ///  | Do A    | A     |
-    ///  | Do B    | A, B  |
-    ///  | Undo    | A     |
-    ///  | Do C    | A, C  |
+    ///
+    /// | Command | State |
+    /// |---------|-------|
+    /// | Init    |       |
+    /// | Do A    | A     |
+    /// | Do B    | A, B  |
+    /// | Undo    | A     |
+    /// | Do C    | A, C  |
     ///
     ///  The iterator would iterator over the sequence [C, A].
     ///
@@ -555,23 +560,23 @@ impl<T> Commands<T> {
     /// commands.push(Command::D);
     /// commands.push(Command::E);
     ///
-    /// let v: Vec<_> = commands.iter_back().collect();
+    /// let v: Vec<_> = commands.iter_realized().collect();
     /// assert_eq!(v, [&Command::E,&Command::D, &Command::A]);
     /// ```
-    pub fn iter_back(&self) -> RealizedIter<'_, T> {
-        RealizedIter {
+    pub fn iter_realized(&self) -> IterRealized<'_, T> {
+        IterRealized {
             commands: &self.commands,
             current: self.commands.len(),
         }
     }
     /// Merge a sequence of realized commands into a single new command or remove the sequence.
     ///
-    /// The parameter `f` takes as an input a [RealizedIterator], and returns a
-    /// [std::ops::ControlFlow<Option<Merge>>, Option<Merge>>]. If returned value
-    /// contain a [Merge], the action specified by merge is then realized.
+    /// The parameter `f` takes as an input a [IterRealized], and returns a
+    /// [`std::ops::ControlFlow<Option<Merge>, Option<Merge>>`](std::ops::ControlFlow). If the returned value
+    /// contain a `Some(merge)`[Merge], the action specified by `merge` is then realized.
     ///
     /// The function is excuted recursively while it returns a `ControlFlow::Continue(_)` with a
-    /// realized iterator that is decremented by 1 if no merge command is returned, or set to the
+    /// realized iterator that is advanced by 1 if no merge command is returned, or set to the
     /// element previous to the last merge command.
     ///
     /// The execution stops when the functions either returned `ControlFlow::Break` or after the
@@ -582,7 +587,7 @@ impl<T> Commands<T> {
     /// # Example
     ///
     /// ```
-    /// use undo_2::{Commands, CommandItem, Merge, RealizedIter};
+    /// use undo_2::{Commands, CommandItem, Merge, IterRealized};
     /// use std::ops::ControlFlow;
     ///
     /// #[derive(Eq, PartialEq, Debug)]
@@ -592,7 +597,7 @@ impl<T> Commands<T> {
     ///     AB,
     /// }
     /// use Command::*;
-    /// fn is_ab<'a>(mut it: RealizedIter<'a, Command>) -> (bool, RealizedIter<'a, Command>) {
+    /// fn is_ab<'a>(mut it: IterRealized<'a, Command>) -> (bool, IterRealized<'a, Command>) {
     ///     let cond = it.next() == Some(&Command::B) && it.next() == Some(&Command::A);
     ///     (cond, it)
     /// }
@@ -603,7 +608,6 @@ impl<T> Commands<T> {
     ///
     ///     commands.merge(|start| {
     ///         if let (true, end) = is_ab(start.clone()) {
-    ///             println!("merge");
     ///             ControlFlow::Continue(Some(Merge {
     ///                 start,
     ///                 end,
@@ -619,12 +623,12 @@ impl<T> Commands<T> {
     pub fn merge<F>(&mut self, mut f: F)
     where
         for<'a> F:
-            FnMut(RealizedIter<'a, T>) -> ControlFlow<Option<Merge<'a, T>>, Option<Merge<'a, T>>>,
+            FnMut(IterRealized<'a, T>) -> ControlFlow<Option<Merge<'a, T>>, Option<Merge<'a, T>>>,
     {
         use ControlFlow::*;
         let mut start = self.commands.len();
         while start != 0 {
-            let it = RealizedIter {
+            let it = IterRealized {
                 commands: &self.commands,
                 current: start,
             };
@@ -733,7 +737,7 @@ impl<T> From<T> for CommandItem<T> {
     }
 }
 
-impl<'a, T> Iterator for RealizedIter<'a, T> {
+impl<'a, T> Iterator for IterRealized<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<Self::Item> {
         use CommandItem::*;
@@ -746,7 +750,7 @@ impl<'a, T> Iterator for RealizedIter<'a, T> {
         }
     }
 }
-impl<'a, T> FusedIterator for RealizedIter<'a, T> {}
+impl<'a, T> FusedIterator for IterRealized<'a, T> {}
 
 impl<'a, T, It: Iterator<Item = &'a Action<usize>>> Iterator for ActionIter<'a, T, It> {
     type Item = Action<&'a T>;
@@ -885,126 +889,6 @@ fn do_simplify(to_do: &mut Vec<Action<usize>>) {
 mod test {
     use super::Action;
     use super::Action::*;
-    use super::Commands;
-    #[test]
-    fn com() {}
-    #[test]
-    #[allow(unused)]
-    fn application() {
-        enum Command {
-            Add(char),
-            Delete(char),
-        }
-        struct TextEditor {
-            text: String,
-            command: Commands<Command>,
-        }
-        impl TextEditor {
-            pub fn new() -> Self {
-                Self {
-                    text: String::new(),
-                    command: Commands::new(),
-                }
-            }
-            pub fn add_char(&mut self, c: char) {
-                self.text.push(c);
-                self.command.push(Command::Add(c));
-            }
-            pub fn delete_char(&mut self) {
-                if let Some(c) = self.text.pop() {
-                    self.command.push(Command::Delete(c));
-                }
-            }
-            pub fn undo(&mut self) {
-                for action in self.command.undo() {
-                    interpret_action(&mut self.text, action)
-                }
-            }
-            pub fn redo(&mut self) {
-                for action in self.command.redo() {
-                    interpret_action(&mut self.text, action)
-                }
-            }
-        }
-        fn interpret_action(data: &mut String, action: Action<&Command>) {
-            use Command::*;
-            match action {
-                Action::Do(Add(c)) | Action::Undo(Delete(c)) => {
-                    data.push(*c);
-                }
-                Action::Undo(Add(_)) | Action::Do(Delete(_)) => {
-                    data.pop();
-                }
-            }
-        }
-        let mut editor = TextEditor::new();
-        editor.add_char('a'); //              :[1]
-        editor.add_char('b'); //              :[2]
-        editor.add_char('d'); //              :[3]
-        assert_eq!(editor.text, "abd");
-
-        editor.undo(); // first undo          :[4]
-        assert_eq!(editor.text, "ab");
-
-        editor.add_char('c'); //              :[5]
-        assert_eq!(editor.text, "abc");
-
-        editor.undo(); // Undo [5]            :[6]
-        assert_eq!(editor.text, "ab");
-        editor.undo(); // Undo the undo [4]   :[7]
-        assert_eq!(editor.text, "abd");
-        editor.undo(); // Undo [3]            :[8]
-        assert_eq!(editor.text, "ab");
-        editor.undo(); // Undo [2]            :[9]
-        assert_eq!(editor.text, "a");
-
-        editor.add_char('z'); //              :[10]
-        assert_eq!(editor.text, "az");
-        // when an action is performed after a sequence
-        // of undo, the undos are merged: undos [6] to [9] are merged now
-
-        editor.undo(); // back to [10]
-        assert_eq!(editor.text, "a");
-        editor.undo(); // back to [5]: reverses the consecutive sequence of undos in batch
-        assert_eq!(editor.text, "abc");
-        editor.undo(); // back to [4]
-        assert_eq!(editor.text, "ab");
-        editor.undo(); // back to [3]
-        assert_eq!(editor.text, "abd");
-        editor.undo(); // back to [2]
-        assert_eq!(editor.text, "ab");
-        editor.undo(); // back to [1]
-        assert_eq!(editor.text, "a");
-        editor.undo(); // back to [0]
-        assert_eq!(editor.text, "");
-
-        editor.redo(); // back to [1]
-        assert_eq!(editor.text, "a");
-        editor.redo(); // back to [2]
-        assert_eq!(editor.text, "ab");
-        editor.redo(); // back to [3]
-        assert_eq!(editor.text, "abd");
-        editor.redo(); // back to [4]
-        assert_eq!(editor.text, "ab");
-        editor.redo(); // back to [5]
-        assert_eq!(editor.text, "abc");
-        editor.redo(); // back to [9]: redo inner consecutive sequence of undos in batch
-                       //              (undo are merged only when they are not the last action)
-        assert_eq!(editor.text, "a");
-        editor.redo(); // back to [10]
-        assert_eq!(editor.text, "az");
-
-        editor.add_char('1');
-        editor.add_char('2');
-        assert_eq!(editor.text, "az12");
-        editor.undo();
-        editor.undo();
-        assert_eq!(editor.text, "az");
-        editor.redo(); // undo is the last action, undo the undo only once
-        assert_eq!(editor.text, "az1");
-        editor.redo();
-        assert_eq!(editor.text, "az12");
-    }
     #[test]
     fn simplify() {
         use super::do_simplify;
@@ -1072,219 +956,6 @@ mod test {
                 Undo(0),
             ];
             assert_eq!(simplify(v), vec![]);
-        }
-    }
-    struct CommandString(Vec<(usize, char)>, Commands<(usize, char)>);
-    impl CommandString {
-        fn new() -> Self {
-            CommandString(vec![], Commands::new())
-        }
-        fn push(&mut self, c: char) {
-            let l = self.0.len();
-            self.0.push((l, c));
-            self.1.push((l, c));
-        }
-        #[track_caller]
-        fn undo(&mut self) {
-            Self::apply(&mut self.0, self.1.undo());
-        }
-        #[track_caller]
-        fn redo(&mut self) {
-            Self::apply(&mut self.0, self.1.redo());
-        }
-        #[track_caller]
-        fn apply<'a>(
-            s: &mut Vec<(usize, char)>,
-            it: impl Iterator<Item = Action<&'a (usize, char)>>,
-        ) {
-            for c in it {
-                match c {
-                    Do(i) => {
-                        assert_eq!(s.len(), i.0, "inconsitent push");
-                        s.push(*i);
-                    }
-                    Undo(i) => {
-                        assert_eq!(s.pop(), Some(*i), "inconsistent pop");
-                    }
-                }
-            }
-        }
-    }
-    #[test]
-    fn command_sequence() {
-        let mut c = CommandString::new();
-        c.push('a');
-        assert!(&c.0 == &[(0, 'a')]);
-        assert!(c.1.len() == 1);
-        c.undo();
-        assert!(&c.0 == &[]);
-        c.redo();
-        assert!(&c.0 == &[(0, 'a')]);
-        c.push('b');
-        c.push('c');
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'c')]);
-        c.redo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'c')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b')]);
-        c.push('d');
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'd')]);
-        c.push('e');
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'd'), (3, 'e')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'd')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'c')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a')]);
-        c.push('f');
-        assert!(&c.0 == &[(0, 'a'), (1, 'f')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'd'), (3, 'e')]);
-        c.redo();
-        assert!(&c.0 == &[(0, 'a')]);
-        c.undo();
-        assert!(&c.0 == &[(0, 'a'), (1, 'b'), (2, 'd'), (3, 'e')]);
-    }
-    #[test]
-    fn crap() {
-        use super::CommandItem;
-        use super::Merge;
-        use super::RealizedIter;
-        use std::ops::ControlFlow;
-        #[derive(Eq, PartialEq, Debug)]
-        enum Command {
-            A,
-            B,
-            AB,
-        }
-        use Command::*;
-        fn is_ab<'a>(mut it: RealizedIter<'a, Command>) -> (bool, RealizedIter<'a, Command>) {
-            let cond = it.next() == Some(&Command::B) && it.next() == Some(&Command::A);
-            (cond, it)
-        }
-        {
-            let mut commands = Commands::new();
-            commands.push(Command::A);
-            commands.push(Command::B);
-
-            commands.merge(|start| {
-                if let (true, end) = is_ab(start.clone()) {
-                    println!("merge");
-                    ControlFlow::Continue(Some(Merge {
-                        start,
-                        end,
-                        command: Some(Command::AB),
-                    }))
-                } else {
-                    ControlFlow::Continue(None)
-                }
-            });
-            assert_eq!(&*commands, &[CommandItem::Command(AB)]);
-        }
-    }
-    #[test]
-    fn merge() {
-        use super::CommandItem;
-        use super::Merge;
-        use super::RealizedIter;
-        use std::ops::ControlFlow;
-        #[derive(Eq, PartialEq, Debug)]
-        enum Command {
-            A,
-            B,
-            C,
-            AB,
-        }
-        use Command::*;
-        fn is_ab<'a>(mut it: RealizedIter<'a, Command>) -> (bool, RealizedIter<'a, Command>) {
-            let cond = it.next() == Some(&Command::B) && it.next() == Some(&Command::A);
-            (cond, it)
-        }
-        fn parse<'a>(
-            start: RealizedIter<'a, Command>,
-        ) -> ControlFlow<Option<Merge<'a, Command>>, Option<Merge<'a, Command>>> {
-            if let (true, end) = is_ab(start.clone()) {
-                println!("merge");
-                ControlFlow::Continue(Some(Merge {
-                    start,
-                    end,
-                    command: Some(Command::AB),
-                }))
-            } else {
-                ControlFlow::Continue(None)
-            }
-        }
-        {
-            let mut commands = Commands::new();
-            commands.push(Command::A);
-            commands.push(Command::B);
-
-            commands.merge(parse);
-            assert_eq!(&commands.commands, &[CommandItem::Command(Command::AB)]);
-        }
-        {
-            println!("new\n");
-            let mut commands = Commands::new();
-            commands.push(Command::A);
-            commands.push(Command::C);
-            commands.push(Command::B);
-            commands.push(Command::A);
-            commands.push(Command::B);
-
-            commands.merge(parse);
-            assert_eq!(
-                &commands.commands,
-                &[
-                    CommandItem::Command(A),
-                    CommandItem::Command(C),
-                    CommandItem::Command(B),
-                    CommandItem::Command(AB)
-                ]
-            );
-        }
-        {
-            println!("new\n");
-            let mut commands = Commands::new();
-            commands.push(Command::A);
-            commands.push(Command::C);
-            commands.push(Command::A);
-            commands.push(Command::B);
-            commands.push(Command::B);
-            commands.push(Command::A);
-            commands.push(Command::B);
-
-            commands.merge(parse);
-            assert_eq!(
-                &commands.commands,
-                &[
-                    CommandItem::Command(A),
-                    CommandItem::Command(C),
-                    CommandItem::Command(AB),
-                    CommandItem::Command(B),
-                    CommandItem::Command(AB)
-                ]
-            );
-        }
-        {
-            println!("new\n");
-            let mut commands = Commands::new();
-            commands.push(Command::A);
-            commands.push(Command::B);
-            commands.push(Command::A);
-            commands.push(Command::B);
-
-            commands.merge(parse);
-            assert_eq!(
-                &*commands,
-                &[CommandItem::Command(AB), CommandItem::Command(AB)]
-            );
         }
     }
 }

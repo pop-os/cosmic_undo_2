@@ -1,40 +1,40 @@
-# Undo done the 'right way' ;)
+# Undo done the right way!
 
 ## Introduction
 
-An undo crate where 'undo' goes back in time linearly: no commands are
+An undo crate where 'undo' goes back in time sequentialy: no commands are
 lost. In practice, it undoes the "undo". For a detailed explanation (and all the
 credits goes to) [zaboople/klonk]. This crate is an implementation of this idea 
 with a minor variation explained below.
 
 As an example consider the following sequence of commands: 
 
-  | Command | State |
-  |---------|-------|
-  | Init    |       | 
-  | Do A    | A     |
-  | Do B    | A, B  |
-  | Undo    | A     | 
-  | Do C    | A, C  | 
+| Command | State |
+| ------- | ----- |
+| Init    |       | 
+| Do A    | A     |
+| Do B    | A, B  |
+| Undo    | A     | 
+| Do C    | A, C  | 
 
 With the **classical undo**, repeated undo would lead to the sequence: 
 
-  | Command | State |
-  |---------|-------|
-  |         | A, C  |
-  | Undo    | A     |
-  | Undo    |       | 
+| Command | State |
+|---------|-------|
+|         | A, C  |
+| Undo    | A     |
+| Undo    |       | 
 
 
 Starting from 5, with **undo_2**, repeating undo would lead to the sequence: 
 
-  | Command | State |
-  |---------|-------|
-  |         | A, C  |
-  | Undo    | A     |
-  | Undo    | A,B   | 
-  | Undo    | A     | 
-  | Undo    |       | 
+| Command | State |
+|---------|-------|
+|         | A, C  |
+| Undo    | A     |
+| Undo    | A,B   | 
+| Undo    | A     | 
+| Undo    |       | 
 
 **undo_2**'s undo navigates back in history, while classical undo navigates back
 through the sequence of command that builds the state.
@@ -149,20 +149,20 @@ assert_eq!(editor.text, "a");
    forming the sequence are merged. This makes the traversal of the undo
    sequence more concise by avoiding state duplication.
 
-  | Command | State   | Comment              | 
-  |---------|-------  |----------------------|
-  | Init    |         |                      | 
-  | Do A    | A       |                      |
-  | Do B    | A,B     |                      |
-  | Do C    | A, B, C |                      |
-  | Undo    | A, B    |Merged                | 
-  | Undo    | A       |Merged                | 
-  | Do D    | A, D    |                      | 
-  | Undo    | A       |Redo the 2 Merged Undo|
-  | Undo    | A, B, C |                      | 
-  | Undo    | A, B    |                      | 
-  | Undo    | A       |                      | 
-  | Undo    |         |                      | 
+| Command | State   | Comment              | 
+|---------|-------  |----------------------|
+| Init    |         |                      | 
+| Do A    | A       |                      |
+| Do B    | A,B     |                      |
+| Do C    | A, B, C |                      |
+| Undo    | A, B    |Merged                | 
+| Undo    | A       |Merged                | 
+| Do D    | A, D    |                      | 
+| Undo    | A       |Redo the 2 Merged Undo|
+| Undo    | A, B, C |                      | 
+| Undo    | A, B    |                      | 
+| Undo    | A       |                      | 
+| Undo    |         |                      | 
 
 2. Each execution of an undos or redo may lead to the execution of a sequence of
    actions in the form `Undo(a)+Do(b)+Do(c)`. Basic arithmetic is implemented

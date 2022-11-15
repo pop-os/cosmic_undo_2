@@ -2,8 +2,23 @@
 name = "undo_2"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Olivier Kannengieser <okannen@gmail.com>"]
+repository = "https://gitlab.com/okannen/undo_2"
+license = "MIT or Apache-2.0"
+keywords = ["undo", "redo"]
+categories = ["data-structures"]
+description = "Undo and redo done the right-way."
+rust-version = "1.64"
 
 [dependencies]
 derivative = "2"
+serde = {version = "1", optional = true, features = ["derive"]}
+
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = "1"
+
