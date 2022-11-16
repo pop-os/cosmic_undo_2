@@ -769,7 +769,7 @@ impl<T> Commands<T> {
             }
         }
     }
-    pub fn do_splice<I>(&mut self, rev_start: usize, rev_end: usize, commands: I)
+    fn do_splice<I>(&mut self, rev_start: usize, rev_end: usize, commands: I)
     where
         I: IntoIterator<Item = T>,
     {
