@@ -2,10 +2,11 @@
 
 ## Introduction
 
-An undo crate where 'undo' goes back in time sequentialy: no commands are
-lost. In practice, it undoes the "undo". For a detailed explanation (and all the
-credits goes to) [zaboople/klonk]. This crate is an implementation of this idea 
-with a minor variation explained below.
+An undo crate that makes it so that, the instant you edit something you undid
+to, instead of truncating the undo/redo history, it bakes the rewind onto the
+end of the Undo history as a precursor to your new change. The idea originates
+from (and all the credits goes to) [zaboople/klonk]. This crate is an
+implementation of this idea with a minor variation explained below.
 
 As an example consider the following sequence of commands: 
 
