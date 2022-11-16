@@ -1,4 +1,6 @@
-#! [doc = include_str!("../README.md")]
+#![doc = include_str!("../README.md")]
+#![cfg_attr(RUSTC_IS_NIGTHLY, feature(drain_filter))]
+use cfg_if::cfg_if;
 use core::borrow::Borrow;
 use core::iter::FusedIterator;
 use core::ops::ControlFlow;
@@ -67,9 +69,9 @@ pub enum Action<T> {
 /// by dereferencing the command.
 ///
 /// It also
-#[derive(Clone, Default, Derivative)]
+#[derive(Clone, Derivative)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derivative(Debug, PartialEq, Eq, Hash)]
+#[derivative(Debug, PartialEq, Eq, Hash, Default(bound = ""))]
 pub struct Commands<T> {
     commands: Vec<CommandItem<T>>,
     #[derivative(Debug = "ignore", PartialEq = "ignore", Hash = "ignore")]
@@ -551,7 +553,8 @@ impl<T> Commands<T> {
         self.commands.drain(..j);
     }
     fn remove_i(&self, mut i: usize, end: usize) -> usize {
-        for j in i..end {
+        let i0 = i;
+        for j in i0..end {
             if let CommandItem::Undo(count) = self.commands[j] {
                 if j - count - 1 < i {
                     i = self.remove_i(j - count - 1, i)
@@ -691,7 +694,7 @@ impl<T> Commands<T> {
     /// # Example
     ///
     /// ```
-    /// use undo_2::{Commands, CommandItem, Merge, IterRealized};
+    /// use undo_2::{Commands, CommandItem, Splice, IterRealized};
     /// use std::ops::ControlFlow;
     ///
     /// // we suppose that A, B, C is equivalent to D,E
@@ -717,12 +720,12 @@ impl<T> Commands<T> {
     /// commands.push(B);
     /// commands.push(C);
     ///
-    /// commands.merge(|start| {
-    ///     if let (true, end) = is_ab(start.clone()) {
+    /// commands.splice(|start| {
+    ///     if let (true, end) = is_abc(start.clone()) {
     ///         ControlFlow::Continue(Some(Splice {
     ///             start,
     ///             end,
-    ///             command: [D,E],
+    ///             commands: [D,E],
     ///         }))
     ///     } else {
     ///         ControlFlow::Continue(None)
@@ -731,14 +734,13 @@ impl<T> Commands<T> {
     ///
     /// assert_eq!(&*commands, &[D.into(), E.into()]);
     /// ```
-    pub fn splice<F, I, J>(&mut self, mut f: F)
+    pub fn splice<F, I>(&mut self, mut f: F)
     where
         F: for<'a> FnMut(
             IterRealized<'a, T>,
         )
-            -> ControlFlow<Option<Splice<'a, T, I>>, Option<Splice<'a, T, J>>>,
+            -> ControlFlow<Option<Splice<'a, T, I>>, Option<Splice<'a, T, I>>>,
         I: IntoIterator<Item = T>,
-        J: IntoIterator<Item = T>,
     {
         use ControlFlow::*;
         let mut start = self.commands.len();
@@ -775,6 +777,146 @@ impl<T> Commands<T> {
         let start_i = rev_end;
         self.commands
             .splice(start_i..end_i, commands.into_iter().map(|c| c.into()));
+    }
+
+    /// Clean up the history of all the undone commands.
+    ///
+    /// After this call the sequence of command will not contain
+    /// any `CommandItem::Undo`
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::{CommandItem, Commands};
+    ///
+    /// #[derive(Debug, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C,
+    /// }
+    /// use Command::*;
+    /// let mut c = Commands::default();
+    ///
+    /// c.push(A);
+    /// c.push(B);
+    /// c.undo();
+    /// c.push(C);
+    /// assert_eq!(*c, [A.into(), B.into(), CommandItem::Undo(0), C.into()]);
+    ///
+    /// c.remove_all_undone();
+    /// assert_eq!(*c, [A.into(), C.into()]);
+    /// ```
+    pub fn remove_all_undone(&mut self) {
+        self.remove_undone(|i| i)
+    }
+    /// Clean up the history of all undone commands before a given
+    /// [realized iterator](Commands#method.iter_realized).
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::{Commands,CommandItem};
+    ///
+    /// #[derive(Debug, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C,
+    ///     D,
+    /// }
+    /// use Command::*;
+    /// let mut c = Commands::default();
+    ///
+    /// c.push(A);
+    /// c.push(B);
+    /// c.undo();
+    /// c.push(C);
+    /// c.push(C);
+    /// c.undo();
+    /// c.push(D);
+    /// assert_eq!(
+    ///     *c,
+    ///     [
+    ///         A.into(),
+    ///         B.into(),
+    ///         CommandItem::Undo(0),
+    ///         C.into(),
+    ///         C.into(),
+    ///         CommandItem::Undo(0),
+    ///         D.into()
+    ///     ]
+    /// );
+    ///
+    /// let v: Vec<_> = c.iter_realized().collect();
+    /// assert_eq!(*v, [&D, &C, &A]);
+    ///
+    /// c.remove_undone(|mut it| {
+    ///     it.nth(1);
+    ///     it
+    /// });
+    /// assert_eq!(
+    ///     *c,
+    ///     [A.into(), C.into(), C.into(), CommandItem::Undo(0), D.into()]
+    /// );
+    ///
+    /// // This operation does not change the sequence of realized commands:
+    /// let v: Vec<_> = c.iter_realized().collect();
+    /// assert_eq!(*v, [&D, &C, &A]);
+    /// ```
+    pub fn remove_undone<F>(&mut self, from: F)
+    where
+        F: for<'a> FnOnce(IterRealized<'a, T>) -> IterRealized<'a, T>,
+    {
+        let from = from(self.iter_realized());
+
+        let mut it = IterRealized {
+            commands: &self.commands,
+            ..from
+        };
+
+        self.undo_cache.clear();
+
+        let start = it.current;
+        while let Some(_) = it.next() {
+            self.undo_cache.push(Action::Do(it.current));
+        }
+        dbg!(&self.undo_cache);
+
+        cfg_if! {
+            if #[cfg(RUSTC_IS_NIGTHLY)] {
+                let mut index = 0;
+                let mut it = self.undo_cache.iter().rev();
+                let mut keep = it.next();
+                self.commands.drain_filter(|_| {
+                    let cond = match keep {
+                        Some(a) => {
+                            let cond = match a {
+                                Action::Do(i) | Action::Undo(i) => index != *i,
+                            };
+                            if !cond {
+                                keep = it.next();
+                            }
+                            cond
+                        },
+                        None => index < start,
+                    };
+                    index += 1;
+                    cond
+                });
+            } else {
+                let mut i = 0;
+                let mut shift = 0;
+                for u in self.undo_cache.iter().rev() {
+                    match *u {
+                        Action::Do(j) | Action::Undo(j) => {
+                            self.commands.drain(i-shift..j-shift);
+                            shift += j-i;
+                            i = j + 1;
+                        }
+                    }
+                }
+                self.commands.drain(i-shift..start-shift);
+            }
+        }
     }
 }
 
@@ -814,7 +956,7 @@ impl<'a, T> IntoIterator for &'a Commands<T> {
         self.commands.iter()
     }
 }
-impl<'a, T> IntoIterator for Commands<T> {
+impl<T> IntoIterator for Commands<T> {
     type Item = CommandItem<T>;
     type IntoIter = std::vec::IntoIter<CommandItem<T>>;
     fn into_iter(self) -> Self::IntoIter {
@@ -869,7 +1011,7 @@ impl<T> Action<&T> {
     /// Map `Action<&T>` to an `Action<T>` by cloning the content.
     pub fn cloned(self) -> Action<T>
     where
-        T: Copy,
+        T: Clone,
     {
         self.map(|v| v.clone())
     }
@@ -885,7 +1027,7 @@ impl<T> Action<&mut T> {
     /// Map `Action<&mut T>` to an `Action<T>` by cloning the content.
     pub fn cloned(self) -> Action<T>
     where
-        T: Copy,
+        T: Clone,
     {
         self.map(|v| v.clone())
     }
@@ -949,14 +1091,8 @@ impl<T: PartialEq + Eq> Action<T> {
     fn is_reverse_of(&self, other: &Self) -> bool {
         use Action::*;
         match self {
-            Do(i) => match other {
-                Undo(j) if i == j => true,
-                _ => false,
-            },
-            Undo(i) => match other {
-                Do(j) if i == j => true,
-                _ => false,
-            },
+            Do(i) => matches!(other, Undo(j) if i == j),
+            Undo(i) => matches!(other, Do(j) if i == j),
         }
     }
 }
@@ -1044,7 +1180,7 @@ fn do_simplify(to_do: &mut Vec<Action<usize>>) {
                     cursor = analyzed
                 } else {
                     cursor = analyzed + 1;
-                    analyzed = analyzed + 1;
+                    analyzed += 1;
                 }
             }
         } else {
