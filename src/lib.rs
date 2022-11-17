@@ -2,11 +2,13 @@
 #![cfg_attr(RUSTC_IS_NIGTHLY, feature(drain_filter))]
 use cfg_if::cfg_if;
 use core::borrow::Borrow;
+use core::cmp::min;
 use core::iter::FusedIterator;
 use core::ops::ControlFlow;
 use core::ops::{Deref, Index};
 use core::option;
 use derivative::Derivative;
+use std::cmp::Ordering;
 use std::slice::SliceIndex;
 use std::{slice, vec};
 
@@ -19,13 +21,55 @@ use serde::{Deserialize, Serialize};
 /// The type parameter `T` is the command type.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Action<T> {
-    /// Execute the action described by the inner parameter
+    /// The client shall do the command refered by the inner parameter.
     Do(T),
-    /// Execute inverse of the action described by the inner parameter
+    /// The client shall undo the command refered by the inner parameter.
     Undo(T),
 }
 
-/// Store a list of [commands](CommandItem) to undo and redo.
+/// The items stored in [Commands].
+///
+/// The list of `CommandItem` is accessible by dereferencing
+/// the command list.
+///
+/// *NB*: The value inside the Undo variant is the number
+/// of time the undo command is repeated minus 1.
+///
+/// # Example
+///
+/// ```
+/// use undo_2::{Commands,CommandItem};
+///
+/// let mut commands = Commands::new();
+///
+/// #[derive(Debug,PartialEq)]
+/// struct A;
+///
+/// commands.push(A);
+/// commands.undo();
+///
+/// assert_eq!(*commands, [CommandItem::Command(A),CommandItem::Undo(0)]);
+///
+/// use CommandItem::Undo;
+/// assert_eq!(*commands, [A.into(), Undo(0)]);
+///
+/// commands.push(A);
+/// commands.undo();
+/// commands.undo();
+/// assert_eq!(*commands, [A.into(), Undo(0),A.into(),Undo(1)]);
+/// ```
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum CommandItem<T> {
+    // A command typically created by [Commands::push](Commands#method.push)
+    Command(T),
+    // Signify that `count+1` CommandItem previous to this item are undone.
+    //
+    // Where `count` refers to this variant field.
+    Undo(usize),
+}
+
+/// Owns a slice of [commands](CommandItem) to undo and redo.
 ///
 /// Commands are added by invoking [`push`](#method.push) method. [`undo`](#method.undo) and
 /// [`redo`](#method.redo) return a list of [`Action<T>`] that the application must execute.
@@ -41,26 +85,27 @@ pub enum Action<T> {
 ///     A,
 ///     B,
 /// }
+/// use Command::*;
 ///
 /// let mut commands = Commands::new();
 ///
-/// commands.push(Command::A);
-/// commands.push(Command::B);
+/// commands.push(A);
+/// commands.push(B);
 ///
 /// let v: Vec<_> = commands.undo().collect();
-/// assert_eq!(v, [Action::Undo(&Command::B)]);
+/// assert_eq!(v, [Action::Undo(&B)]);
 ///
 /// let v: Vec<_> = commands.undo().collect();
-/// assert_eq!(v, [Action::Undo(&Command::A)]);
+/// assert_eq!(v, [Action::Undo(&A)]);
 ///
-/// commands.push(Command::A);
+/// commands.push(A);
 ///
 /// let v: Vec<_> = commands.undo().collect();
-/// assert_eq!(v, [Action::Undo(&Command::A)]);
+/// assert_eq!(v, [Action::Undo(&A)]);
 ///
 /// // undo the first 2 undos
 /// let v: Vec<_> = commands.undo().collect();
-/// assert_eq!(v, [Action::Do(&Command::A), Action::Do(&Command::B)]);
+/// assert_eq!(v, [Action::Do(&A), Action::Do(&B)]);
 /// ```
 ///
 /// # Representation
@@ -112,53 +157,12 @@ pub struct Splice<'a, T, I: IntoIterator<Item = T>> {
 }
 
 #[derive(Derivative, Debug)]
-#[derivative(Clone(bound = "It:Clone"))]
-/// Iterator of actions returned by [Commands::undo](Commands#method.undo) and [Commands::redo](Commands#method.redo)
-pub struct ActionIter<'a, T, It> {
+#[derivative(Clone(bound = ""))]
+/// Iterator of actions returned by [Commands::undo](Commands#method.undo) and
+/// [Commands::redo](Commands#method.redo)
+pub struct ActionIter<'a, T> {
     commands: &'a [CommandItem<T>],
-    to_do: It,
-}
-/// Iterator of actions returned by [Commands::undo](Commands#method.undo)
-pub type UndoIter<'a, T> = ActionIter<'a, T, std::iter::Rev<std::slice::Iter<'a, Action<usize>>>>;
-/// Iterator of actions returned by [Commands::redo](Commands#method.redo)
-pub type RedoIter<'a, T> = ActionIter<'a, T, std::slice::Iter<'a, Action<usize>>>;
-
-/// The items stored in [Commands].
-///
-/// The list of `CommandItem` is accessible by dereferencing
-/// the command list.
-///
-/// *NB*: The value inside the Undo variant is the number
-/// of time the undo command is repeated minus 1.
-///
-/// # Example
-///
-/// ```
-/// use undo_2::{Commands,CommandItem};
-///
-/// let mut commands = Commands::new();
-///
-/// #[derive(Debug,PartialEq)]
-/// struct A;
-///
-/// commands.push(A);
-/// commands.undo();
-///
-/// assert_eq!(*commands, [CommandItem::Command(A),CommandItem::Undo(0)]);
-///
-/// use CommandItem::Undo;
-/// assert_eq!(*commands, [A.into(), Undo(0)]);
-///
-/// commands.push(A);
-/// commands.undo();
-/// commands.undo();
-/// assert_eq!(*commands, [A.into(), Undo(0),A.into(),Undo(1)]);
-/// ```
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum CommandItem<T> {
-    Command(T),
-    Undo(usize),
+    to_do: std::slice::Iter<'a, Action<usize>>,
 }
 
 #[derive(Derivative, Debug)]
@@ -197,13 +201,14 @@ impl<T> Commands<T> {
     ///     A,
     ///     B,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push(Command::A);
+    /// commands.push(A);
     ///
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&Command::A]);
+    /// assert_eq!(v, [&A]);
     /// ```
     pub fn push(&mut self, command: T) {
         self.commands.push(CommandItem::Command(command));
@@ -220,35 +225,150 @@ impl<T> Commands<T> {
     /// enum Command {
     ///     A,
     ///     B,
+    ///     C
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push(Command::A);
-    /// commands.push(Command::B);
-    /// let v: Vec<_> = commands.undo().collect();
+    /// commands.push(A);
+    /// commands.push(B);
     ///
-    /// assert_eq!(v, [Action::Undo(&Command::B)]);
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert_eq!(v, [Action::Undo(&B)]);
+    ///
+    /// commands.push(C);
+    ///
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert_eq!(v, [Action::Undo(&C)]);
+    ///
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert_eq!(v, [Action::Do(&B)]);
+    ///
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert_eq!(v, [Action::Undo(&B)]);
+    ///
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert_eq!(v, [Action::Undo(&A)]);
+    ///
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert!(v.is_empty())
     /// ```
-    #[must_use = "the returned undo command should be realized"]
-    pub fn undo(&mut self) -> UndoIter<'_, T> {
+    #[must_use = "the returned actions should be realized"]
+    pub fn undo(&mut self) -> ActionIter<'_, T> {
+        self.undo_repeat(0)
+    }
+    /// Return an iterator over a sequence of actions to be performed by the client application to
+    /// undo `repeat + 1` time.
+    ///
+    /// `undo_repeat(0)` is equivalent to `undo()`
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::{Action,Commands};
+    ///
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C
+    /// }
+    /// use Command::*;
+    ///
+    /// let mut commands = Commands::new();
+    ///
+    /// commands.push(A);
+    /// commands.push(B);
+    ///
+    /// let v: Vec<_> = commands.undo().collect();
+    /// assert_eq!(v, [Action::Undo(&B)]);
+    ///
+    /// commands.push(C);
+    ///
+    /// let v: Vec<_> = commands.undo_repeat(3).collect();
+    /// assert_eq!(v, [Action::Undo(&C), Action::Undo(&A)]);
+    /// ```
+    #[must_use = "the returned actions should be realized"]
+    pub fn undo_repeat(&mut self, repeat: usize) -> ActionIter<'_, T> {
         let l = self.len();
         match self.commands.last_mut() {
-            None => UndoIter::new(),
+            Some(CommandItem::Command(_)) => {
+                let count = min(repeat, l - 1);
+                self.commands.push(CommandItem::Undo(count));
+                ActionIter::undo_at_count(
+                    &self.commands,
+                    &mut self.undo_cache,
+                    l - 1 - count,
+                    count,
+                )
+            }
             Some(CommandItem::Undo(i)) => {
                 if *i + 2 < l {
-                    *i += 1;
+                    let count = min(l - *i - 3, repeat);
+                    *i = *i + 1 + count;
                     let t = l - *i - 2;
-                    ActionIter::undo_at(&self.commands, &mut self.undo_cache, t)
+                    ActionIter::undo_at_count(&self.commands, &mut self.undo_cache, t, count)
                 } else {
-                    UndoIter::new()
+                    ActionIter::new()
                 }
             }
-            Some(CommandItem::Command(_)) => {
-                self.commands.push(CommandItem::Undo(0));
-                ActionIter::undo_at(&self.commands, &mut self.undo_cache, l - 1)
-            }
+            None => ActionIter::new(),
         }
+    }
+    /// An undo that skip undo branches.
+    ///
+    /// It returns the command that must be undone.
+    ///
+    /// It is equivalent to multiple successive call to `undo`. It behaves
+    /// as a classical undo.
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::Commands;
+    ///
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C,
+    /// }
+    /// use Command::*;
+    ///
+    /// let mut commands = Commands::new();
+    ///
+    /// commands.push(A);
+    /// commands.push(B);
+    /// commands.undo();
+    /// commands.push(C);
+    ///
+    /// let c = commands.unbuild();
+    /// assert_eq!(c, Some(&C));
+    ///
+    /// let c = commands.unbuild();
+    /// assert_eq!(c, Some(&A));
+    ///
+    /// assert!(commands.unbuild().is_none());
+    /// ```
+    #[must_use = "the returned command should be undone"]
+    pub fn unbuild(&mut self) -> Option<&'_ T> {
+        let mut it = self.iter_realized();
+        it.next()?;
+        let start = it.current;
+        let count = match it.next() {
+            Some(_) => start - it.current,
+            None => start + 1,
+        };
+        match self.commands.last_mut() {
+            Some(CommandItem::Command(_)) => {
+                self.commands.push(CommandItem::Undo(count - 1));
+            }
+            Some(CommandItem::Undo(i)) => *i += count,
+            None => unreachable!(),
+        }
+        Some(match self.commands[start] {
+            CommandItem::Command(ref c) => c,
+            _ => unreachable!(),
+        })
     }
     /// Return an iterator over a sequence of actions to be performed by the client application to
     /// redo.
@@ -262,35 +382,98 @@ impl<T> Commands<T> {
     ///     A,
     ///     B,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push(Command::A);
-    /// commands.push(Command::B);
+    /// commands.push(A);
+    /// commands.push(B);
     /// commands.undo();
     /// let v: Vec<_> = commands.redo().collect();
     ///
-    /// assert_eq!(v, [Action::Do(&Command::B)]);
+    /// assert_eq!(v, [Action::Do(&B)]);
     /// ```
-    #[must_use = "the returned undo command should be realized"]
-    pub fn redo(&mut self) -> RedoIter<'_, T> {
+    #[must_use = "the returned actions should be realized"]
+    pub fn redo(&mut self) -> ActionIter<'_, T> {
+        self.redo_repeat(0)
+    }
+    /// Return an iterator over a sequence of actions to be performed by the client application to
+    /// redo `repeat + 1` time.
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::{Action,Commands};
+    ///
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    /// }
+    /// use Command::*;
+    ///
+    /// let mut commands = Commands::new();
+    ///
+    /// commands.push(A);
+    /// commands.push(B);
+    /// commands.undo();
+    /// commands.undo();
+    /// let v: Vec<_> = commands.redo_repeat(1).collect();
+    ///
+    /// assert_eq!(v, [Action::Do(&A),Action::Do(&B)]);
+    /// ```
+    #[must_use = "the returned actions should be realized"]
+    pub fn redo_repeat(&mut self, repeat: usize) -> ActionIter<'_, T> {
         let l = self.len();
         match self.commands.last_mut() {
             Some(CommandItem::Undo(i)) => {
-                if let Some(ni) = i.checked_sub(1) {
+                if let Some(ni) = i.checked_sub(repeat + 1) {
                     let t = l - 2 - *i;
                     *i = ni;
-                    ActionIter::do_at(&self.commands, &mut self.undo_cache, t)
+                    ActionIter::do_at_count(&self.commands, &mut self.undo_cache, t, repeat)
                 } else {
+                    let count = *i;
                     self.commands.pop();
-                    ActionIter::do_at(
-                        &self.commands,
-                        &mut self.undo_cache,
-                        self.commands.len() - 1,
-                    )
+                    ActionIter::do_at_count(&self.commands, &mut self.undo_cache, l - 2, count)
                 }
             }
-            _ => RedoIter::new(),
+            _ => ActionIter::new(),
+        }
+    }
+    /// Return an iterator over a sequence of actions to be performed by the client application to
+    /// redo all undo.
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::{Action,Commands};
+    ///
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C,
+    /// }
+    /// use Command::*;
+    ///
+    /// let mut commands = Commands::new();
+    ///
+    /// commands.push(A);
+    /// commands.push(B);
+    /// commands.undo();
+    /// commands.undo();
+    ///
+    /// let v: Vec<_> = commands.redo_all().collect();
+    /// assert_eq!(v, [Action::Do(&A), Action::Do(&B)]);
+    /// ```
+    #[must_use = "the returned actions should be realized"]
+    pub fn redo_all(&mut self) -> ActionIter<'_, T> {
+        let l = self.len();
+        match self.commands.last_mut() {
+            Some(CommandItem::Undo(i)) => {
+                let count = *i;
+                self.commands.pop();
+                ActionIter::do_at_count(&self.commands, &mut self.undo_cache, l - 2, count)
+            }
+            _ => ActionIter::new(),
         }
     }
     /// Return `true` if the last action is an undo.
@@ -304,18 +487,19 @@ impl<T> Commands<T> {
     ///     A,
     ///     B,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     /// assert!(!commands.is_undoing());
     ///
-    /// commands.push(Command::A);
+    /// commands.push(A);
     /// assert!(!commands.is_undoing());
     ///
     /// commands.undo();
     /// assert!(commands.is_undoing());
     ///
-    /// commands.push(Command::A);
-    /// commands.push(Command::A);
+    /// commands.push(A);
+    /// commands.push(A);
     /// commands.undo();
     /// commands.undo();
     /// assert!(commands.is_undoing());
@@ -326,6 +510,104 @@ impl<T> Commands<T> {
     /// ```
     pub fn is_undoing(&self) -> bool {
         matches!(self.commands.last(), Some(CommandItem::Undo(_)))
+    }
+
+    /// Return the index of the first realized [command item](CommandItem).
+    ///
+    /// # Example
+    /// ```
+    /// use undo_2::*;
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    /// }
+    /// use Command::*;
+    ///
+    /// let mut c = Commands::new();
+    ///
+    /// c.push(A);
+    /// c.push(B);
+    ///
+    /// let v: Vec<_> = c.iter().collect();
+    /// assert_eq!(v, [&CommandItem::Command(A), &CommandItem::Command(B)]);
+    ///
+    /// assert_eq!(c.current_command_index(), Some(1));
+    ///
+    /// c.undo();
+    ///
+    /// let v: Vec<_> = c.iter().collect();
+    /// assert_eq!(v, [&CommandItem::Command(A), &CommandItem::Command(B), &CommandItem::Undo(0)]);
+    ///
+    /// assert_eq!(c.current_command_index(), Some(0));
+    /// ```
+    pub fn current_command_index(&self) -> Option<usize> {
+        let mut it = self.iter_realized();
+        it.next()?;
+        Some(it.current)
+    }
+
+    /// Repeat undo or redo so that the last realiazed command correspond to
+    /// the [CommandItem] index passed `index`.
+    ///
+    /// ```
+    /// use undo_2::{Action,Commands, CommandItem};
+    /// use std::time::{Instant, Duration};
+    ///
+    /// #[derive(Debug, Eq, PartialEq)]
+    /// enum Command {
+    ///     A,
+    ///     B,
+    ///     C,
+    ///     D,
+    ///     E,
+    /// }
+    /// use Command::*;
+    ///
+    /// let mut commands = Commands::new();
+    ///
+    /// let t0 = Instant::now();
+    /// let t1 = t0 + Duration::from_secs(1);
+    /// let t2 = t0 + Duration::from_secs(2);
+    /// let t3 = t0 + Duration::from_secs(3);
+    /// let t4 = t0 + Duration::from_secs(4);
+    /// commands.push((t0,A));
+    /// commands.push((t1,B));
+    /// commands.undo();
+    /// commands.push((t2,C));
+    /// commands.push((t3,D));
+    /// commands.undo();
+    /// commands.undo();
+    /// commands.push((t4,E));
+    ///
+    ///
+    /// let v: Vec<_> = commands.iter_realized().collect();
+    /// assert_eq!(v, [&(t4,E),&(t0,A)]);
+    ///
+    /// let index = commands.iter().position(|item| match item {
+    ///         CommandItem::Command(item) => item.0 == t2,
+    ///         _ => false
+    ///     }).unwrap();
+    ///
+    /// let actions = commands.undo_or_redo_to_index(index);
+    /// let a: Vec<_> = actions.collect();
+    /// assert_eq!(a, [Action::Undo(&(t4,E)), Action::Do(&(t2,C))]);
+    ///
+    /// let v: Vec<_> = commands.iter_realized().collect();
+    /// assert_eq!(v, [&(t2,C),&(t0,A)]);
+    /// ```
+    pub fn undo_or_redo_to_index(&mut self, i: usize) -> ActionIter<'_, T> {
+        use CommandItem::*;
+        let cur_i = match self.last() {
+            None => return ActionIter::new(),
+            Some(Command(_)) => self.len() - 1,
+            Some(Undo(i)) => self.len() - 2 - i,
+        };
+        match i.cmp(&cur_i) {
+            Ordering::Greater => self.redo_repeat(i - cur_i - 1),
+            Ordering::Less => self.undo_repeat(cur_i - i - 1),
+            Ordering::Equal => ActionIter::new(),
+        }
     }
     /// Clear all the commands.
     ///
@@ -339,11 +621,12 @@ impl<T> Commands<T> {
     ///     A,
     ///     B,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push(Command::A);
-    /// commands.push(Command::B);
+    /// commands.push(A);
+    /// commands.push(B);
     ///
     /// commands.clear();
     ///
@@ -373,6 +656,7 @@ impl<T> Commands<T> {
     ///     D,
     ///     E,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
@@ -381,27 +665,27 @@ impl<T> Commands<T> {
     /// let t2 = t0 + Duration::from_secs(2);
     /// let t3 = t0 + Duration::from_secs(3);
     /// let t4 = t0 + Duration::from_secs(4);
-    /// commands.push((t0,Command::A));
-    /// commands.push((t1,Command::B));
-    /// commands.push((t2,Command::C));
-    /// commands.push((t3,Command::D));
-    /// commands.push((t4,Command::E));
+    /// commands.push((t0,A));
+    /// commands.push((t1,B));
+    /// commands.push((t2,C));
+    /// commands.push((t3,D));
+    /// commands.push((t4,E));
     ///
     /// commands.remove_until(|(t, _)| *t > t1);
     ///
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&(t4,Command::E),&(t3,Command::D), &(t2,Command::C)]);
+    /// assert_eq!(v, [&(t4,E),&(t3,D), &(t2,C)]);
     ///
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push((t0,Command::A));
-    /// commands.push((t1,Command::B)); //B
-    /// commands.push((t2,Command::C));
+    /// commands.push((t0,A));
+    /// commands.push((t1,B)); //B
+    /// commands.push((t2,C));
     /// commands.undo();
     /// commands.undo();// undo covering B
-    /// commands.push((t3,Command::D));
-    /// commands.push((t4,Command::E));
+    /// commands.push((t3,D));
+    /// commands.push((t4,E));
     ///
     /// commands.remove_until(|(t, _)| *t > t1);
     ///
@@ -411,7 +695,7 @@ impl<T> Commands<T> {
     ///
     /// // B not removed because it is covered by an undo
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&(t2,Command::C),&(t1,Command::B)]);
+    /// assert_eq!(v, [&(t2,C),&(t1,B)]);
     ///
     /// ```
     pub fn remove_until(&mut self, mut stop_pred: impl FnMut(&T) -> bool) {
@@ -441,6 +725,7 @@ impl<T> Commands<T> {
     ///     D,
     ///     E,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
@@ -449,27 +734,27 @@ impl<T> Commands<T> {
     /// let t2 = t0 + Duration::from_secs(2);
     /// let t3 = t0 + Duration::from_secs(3);
     /// let t4 = t0 + Duration::from_secs(4);
-    /// commands.push((t0,Command::A));
-    /// commands.push((t1,Command::B));
-    /// commands.push((t2,Command::C));
-    /// commands.push((t3,Command::D));
-    /// commands.push((t4,Command::E));
+    /// commands.push((t0,A));
+    /// commands.push((t1,B));
+    /// commands.push((t2,C));
+    /// commands.push((t3,D));
+    /// commands.push((t4,E));
     ///
     /// commands.keep_last(2);
     ///
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&(t4,Command::E),&(t3,Command::D)]);
+    /// assert_eq!(v, [&(t4,E),&(t3,D)]);
     ///
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push((t0,Command::A));
-    /// commands.push((t1,Command::B)); //B
-    /// commands.push((t2,Command::C));
+    /// commands.push((t0,A));
+    /// commands.push((t1,B)); //B
+    /// commands.push((t2,C));
     /// commands.undo();
     /// commands.undo();// undo covering B
-    /// commands.push((t3,Command::D));
-    /// commands.push((t4,Command::E));
+    /// commands.push((t3,D));
+    /// commands.push((t4,E));
     ///
     /// // sequence of undo count for 1
     /// // so try to remove A and B
@@ -481,7 +766,7 @@ impl<T> Commands<T> {
     ///
     /// // B not removed because it is covered by an undo
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&(t2,Command::C),&(t1,Command::B)]);
+    /// assert_eq!(v, [&(t2,C),&(t1,B)]);
     /// ```
     pub fn keep_last(&mut self, count: usize) {
         let i = self.len().saturating_sub(count);
@@ -506,6 +791,7 @@ impl<T> Commands<T> {
     ///     D,
     ///     E,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
@@ -514,27 +800,27 @@ impl<T> Commands<T> {
     /// let t2 = t0 + Duration::from_secs(2);
     /// let t3 = t0 + Duration::from_secs(3);
     /// let t4 = t0 + Duration::from_secs(4);
-    /// commands.push((t0,Command::A));
-    /// commands.push((t1,Command::B));
-    /// commands.push((t2,Command::C));
-    /// commands.push((t3,Command::D));
-    /// commands.push((t4,Command::E));
+    /// commands.push((t0,A));
+    /// commands.push((t1,B));
+    /// commands.push((t2,C));
+    /// commands.push((t3,D));
+    /// commands.push((t4,E));
     ///
     /// commands.remove_first(3);
     ///
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&(t4,Command::E),&(t3,Command::D)]);
+    /// assert_eq!(v, [&(t4,E),&(t3,D)]);
     ///
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push((t0,Command::A));
-    /// commands.push((t1,Command::B)); //B
-    /// commands.push((t2,Command::C));
+    /// commands.push((t0,A));
+    /// commands.push((t1,B)); //B
+    /// commands.push((t2,C));
     /// commands.undo();
     /// commands.undo();// undo covering B
-    /// commands.push((t3,Command::D));
-    /// commands.push((t4,Command::E));
+    /// commands.push((t3,D));
+    /// commands.push((t4,E));
     ///
     /// // sequence of undo count for 1
     /// // so try to remove A and B
@@ -546,7 +832,7 @@ impl<T> Commands<T> {
     ///
     /// // B not removed because it is covered by an undo
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&(t2,Command::C),&(t1,Command::B)]);
+    /// assert_eq!(v, [&(t2,C),&(t1,B)]);
     /// ```
     pub fn remove_first(&mut self, i: usize) {
         let j = self.remove_i(i, self.commands.len());
@@ -589,19 +875,20 @@ impl<T> Commands<T> {
     ///     D,
     ///     E,
     /// }
+    /// use Command::*;
     ///
     /// let mut commands = Commands::new();
     ///
-    /// commands.push(Command::A);
-    /// commands.push(Command::B);
-    /// commands.push(Command::C);
+    /// commands.push(A);
+    /// commands.push(B);
+    /// commands.push(C);
     /// commands.undo();
     /// commands.undo();
-    /// commands.push(Command::D);
-    /// commands.push(Command::E);
+    /// commands.push(D);
+    /// commands.push(E);
     ///
     /// let v: Vec<_> = commands.iter_realized().collect();
-    /// assert_eq!(v, [&Command::E,&Command::D, &Command::A]);
+    /// assert_eq!(v, [&E,&D, &A]);
     /// ```
     pub fn iter_realized(&self) -> IterRealized<'_, T> {
         IterRealized {
@@ -879,7 +1166,6 @@ impl<T> Commands<T> {
         while let Some(_) = it.next() {
             self.undo_cache.push(Action::Do(it.current));
         }
-        dbg!(&self.undo_cache);
 
         cfg_if! {
             if #[cfg(RUSTC_IS_NIGTHLY)] {
@@ -1061,10 +1347,13 @@ impl<'a, T> Iterator for IterRealized<'a, T> {
             }
         }
     }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.current))
+    }
 }
 impl<'a, T> FusedIterator for IterRealized<'a, T> {}
 
-impl<'a, T, It: Iterator<Item = &'a Action<usize>>> Iterator for ActionIter<'a, T, It> {
+impl<'a, T> Iterator for ActionIter<'a, T> {
     type Item = Action<&'a T>;
     fn next(&mut self) -> Option<Self::Item> {
         self.to_do.next().map(|c| match c {
@@ -1084,8 +1373,12 @@ impl<'a, T, It: Iterator<Item = &'a Action<usize>>> Iterator for ActionIter<'a, 
             }
         })
     }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.to_do.size_hint()
+    }
 }
-impl<'a, T, It: Iterator<Item = &'a Action<usize>>> FusedIterator for ActionIter<'a, T, It> {}
+impl<'a, T> FusedIterator for ActionIter<'a, T> {}
+impl<'a, T> ExactSizeIterator for ActionIter<'a, T> {}
 
 impl<T: PartialEq + Eq> Action<T> {
     fn is_reverse_of(&self, other: &Self) -> bool {
@@ -1097,38 +1390,35 @@ impl<T: PartialEq + Eq> Action<T> {
     }
 }
 
-impl<'a, T> UndoIter<'a, T> {
-    fn new() -> Self {
-        Self {
-            commands: &[],
-            to_do: [].iter().rev(),
-        }
-    }
-    fn undo_at(
-        commands: &'a [CommandItem<T>],
-        cache: &'a mut Vec<Action<usize>>,
-        i: usize,
-    ) -> Self {
-        cache.clear();
-        new_undo(commands, i + 1, i, cache);
-        do_simplify(cache);
-        Self {
-            commands,
-            to_do: cache.iter().rev(),
-        }
-    }
-}
-
-impl<'a, T> RedoIter<'a, T> {
+impl<'a, T> ActionIter<'a, T> {
     fn new() -> Self {
         Self {
             commands: &[],
             to_do: [].iter(),
         }
     }
-    fn do_at(commands: &'a [CommandItem<T>], cache: &'a mut Vec<Action<usize>>, i: usize) -> Self {
+    fn undo_at_count(
+        commands: &'a [CommandItem<T>],
+        cache: &'a mut Vec<Action<usize>>,
+        i: usize,
+        count: usize,
+    ) -> Self {
         cache.clear();
-        new_do(commands, i, i + 1, cache);
+        cache_undo_indexes(commands, i + 1 + count, i, cache);
+        do_simplify(cache);
+        Self {
+            commands,
+            to_do: cache.iter(),
+        }
+    }
+    fn do_at_count(
+        commands: &'a [CommandItem<T>],
+        cache: &'a mut Vec<Action<usize>>,
+        i: usize,
+        count: usize,
+    ) -> Self {
+        cache.clear();
+        cache_do_indexes(commands, i - count, i + 1, cache);
         do_simplify(cache);
         Self {
             commands,
@@ -1136,7 +1426,7 @@ impl<'a, T> RedoIter<'a, T> {
         }
     }
 }
-fn new_undo<T>(
+fn cache_undo_indexes<T>(
     commands: &[CommandItem<T>],
     undo_from: usize,
     undo_to: usize,
@@ -1145,20 +1435,20 @@ fn new_undo<T>(
     for i in (undo_to..undo_from).into_iter().rev() {
         match commands[i] {
             CommandItem::Command(_) => to_do.push(Action::Undo(i)),
-            CommandItem::Undo(count) => new_do(commands, i - (count + 1), i, to_do),
+            CommandItem::Undo(count) => cache_do_indexes(commands, i - (count + 1), i, to_do),
         }
     }
 }
-fn new_do<T>(
+fn cache_do_indexes<T>(
     commands: &[CommandItem<T>],
     do_from: usize,
     do_to: usize,
     to_do: &mut Vec<Action<usize>>,
 ) {
-    for i in (do_from..do_to).into_iter().rev() {
+    for i in do_from..do_to {
         match commands[i] {
             CommandItem::Command(_) => to_do.push(Action::Do(i)),
-            CommandItem::Undo(count) => new_undo(commands, i, i - (count + 1), to_do),
+            CommandItem::Undo(count) => cache_undo_indexes(commands, i, i - (count + 1), to_do),
         }
     }
 }
