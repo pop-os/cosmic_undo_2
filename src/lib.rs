@@ -112,8 +112,6 @@ pub enum CommandItem<T> {
 ///
 /// `Commands` owns a slice of [CommandItem] that is accesible
 /// by dereferencing the command.
-///
-/// It also
 #[derive(Clone, Derivative)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derivative(Debug, PartialEq, Eq, Hash, Default(bound = ""))]
@@ -126,12 +124,11 @@ pub struct Commands<T> {
 
 /// Specify a merge when calling [Commands::merge](Commands#method.merge)
 ///
-/// The `start` and `end` parameters specifies the slice of command the will
-/// be removed during the merge. But note that [IterRealized] iterate from the newest
-/// to the oldest command, so the slice is reversed.
+/// The [`end`, `start`) bounds the slice of command that will
+/// be removed during the merge. `end` and `start` are in reverse order
+/// because [IterRealized] goes backward.
 ///
-/// The `start` member designate passed the end of the slice, `end` is the beginning
-/// of the slice. If `command` is `None` then the slice will be removed, otherwise if
+/// If `command` is `None` then the slice will be removed, otherwise if
 /// the `command` is `Some(c)` the slice will be replace by `c`.
 #[derive(Debug)]
 pub struct Merge<'a, T> {
@@ -142,12 +139,11 @@ pub struct Merge<'a, T> {
 
 /// Specify a splice when calling [Commands::splice](Commands#method.splice)
 ///
-/// The `start` and `end` parameters specifies the slice of command the will
-/// be removed during the splice. But note that [IterRealized] iterate from the newest
-/// to the oldest command, so the slice is reversed.
+/// The [`end`, `start`) bounds the slice of command that will
+/// be removed during the merge. `end` and `start` are in reverse order
+/// because [IterRealized] goes backward.
 ///
-/// The `start` member designate passed the end of the slice, `end` is the beginning
-/// of the slice. The removed slice is then replaced by the sequence of
+/// The removed slice is then replaced by the sequence (not reversed) of
 /// commands denoted by `commands`.
 #[derive(Debug)]
 pub struct Splice<'a, T, I: IntoIterator<Item = T>> {
@@ -849,7 +845,8 @@ impl<T> Commands<T> {
         }
         i
     }
-    /// Iterate the sequence of *realized commands* from the newest to the oldest.
+    /// Iterate the sequence of [*realized commands*](Commands#method.iter_realized) from the
+    /// newest to the oldest.
     ///
     /// *Realized commands* are commands that are not undone. For example assuming
     /// the folowing sequence of commands:
@@ -896,15 +893,17 @@ impl<T> Commands<T> {
             current: self.commands.len(),
         }
     }
-    /// Merge a sequence of realized commands into a single new command or remove the sequence.
+    /// Merge a sequence of [*realized commands*](Commands#method.iter_realized) into a single new
+    /// command or remove the sequence.
     ///
     /// The parameter `f` takes as an input a [IterRealized], and returns a
-    /// [`std::ops::ControlFlow<Option<Merge>, Option<Merge>>`](std::ops::ControlFlow). If the returned value
-    /// contain a `Some(merge)`[Merge], the action specified by `merge` is then realized.
+    /// [`std::ops::ControlFlow<Option<Merge>, Option<Merge>>`](std::ops::ControlFlow). If the
+    /// returned value contain a `Some(merge)`[Merge], the action specified by `merge` is then
+    /// inserted in place.
     ///
     /// The function is excuted recursively while it returns a `ControlFlow::Continue(_)` with a
-    /// realized iterator that is advanced by 1 if no merge command is returned, or set to the
-    /// element previous to the last merge command.
+    /// [realized iterator](Commands#method.iter_realized) that is advanced by 1 if no merge
+    /// command is returned, or set to the element previous to the last merge command.
     ///
     /// The execution stops when the functions either returned `ControlFlow::Break` or after the
     /// last element in the iteration.
@@ -967,11 +966,12 @@ impl<T> Commands<T> {
     ///
     /// The parameter `f` takes as an input a [IterRealized], and returns a
     /// [`std::ops::ControlFlow<Option<Splice>, Option<Splice>>`](std::ops::ControlFlow). If the returned value
-    /// contain a `Some(splice)`[Splice], the action specified by `splice` is then realized.
+    /// contain a `Some(splice)`[Splice], the actions specified by `splice` are then inserted in
+    /// place.
     ///
     /// The function is excuted recursively while it returns a `ControlFlow::Continue(_)` with a
-    /// realized iterator that is advanced by 1 if no merge command is returned, or set to the
-    /// element previous to the last merge command.
+    /// [realized iterator](Commands#method.iter_realized) that is advanced by 1 if no merge
+    /// command is returned, or set to the element previous to the last merge command.
     ///
     /// The execution stops when the functions either returned `ControlFlow::Break` or after the
     /// last element in the iteration.
