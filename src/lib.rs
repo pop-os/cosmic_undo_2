@@ -1,6 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![cfg_attr(RUSTC_IS_NIGTHLY, feature(drain_filter))]
-use cfg_if::cfg_if;
 use core::borrow::Borrow;
 use core::cmp::min;
 use core::iter::FusedIterator;
@@ -1167,42 +1165,18 @@ impl<T> Commands<T> {
             self.undo_cache.push(Action::Do(it.current));
         }
 
-        cfg_if! {
-            if #[cfg(RUSTC_IS_NIGTHLY)] {
-                let mut index = 0;
-                let mut it = self.undo_cache.iter().rev();
-                let mut keep = it.next();
-                self.commands.drain_filter(|_| {
-                    let cond = match keep {
-                        Some(a) => {
-                            let cond = match a {
-                                Action::Do(i) | Action::Undo(i) => index != *i,
-                            };
-                            if !cond {
-                                keep = it.next();
-                            }
-                            cond
-                        },
-                        None => index < start,
-                    };
-                    index += 1;
-                    cond
-                });
-            } else {
-                let mut i = 0;
-                let mut shift = 0;
-                for u in self.undo_cache.iter().rev() {
-                    match *u {
-                        Action::Do(j) | Action::Undo(j) => {
-                            self.commands.drain(i-shift..j-shift);
-                            shift += j-i;
-                            i = j + 1;
-                        }
-                    }
+        let mut i = 0;
+        let mut shift = 0;
+        for u in self.undo_cache.iter().rev() {
+            match *u {
+                Action::Do(j) | Action::Undo(j) => {
+                    self.commands.drain(i-shift..j-shift);
+                    shift += j-i;
+                    i = j + 1;
                 }
-                self.commands.drain(i-shift..start-shift);
             }
         }
+        self.commands.drain(i-shift..start-shift);
     }
 }
 
