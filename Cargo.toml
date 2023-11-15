@@ -1,5 +1,5 @@
 [package]
-name = "undo_2"
+name = "cosmic_undo_2"
 version = "0.2.0"
 edition = "2021"
 authors = ["Olivier Kannengieser <okannen@gmail.com>"]
@@ -13,8 +13,6 @@ rust-version = "1.64"
 [dependencies]
 derivative = "2"
 serde = {version = "1", optional = true, features = ["derive"]}
-cfg-if = "1"
-
 
 [features]
 default = ["serde"]
