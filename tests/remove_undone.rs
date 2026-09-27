@@ -1,5 +1,5 @@
 #![allow(unused)]
-use undo_2::*;
+use cosmic_undo_2::*;
 
 #[test]
 fn remove_undone() {

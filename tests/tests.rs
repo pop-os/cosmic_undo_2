@@ -1,6 +1,6 @@
-use undo_2::Action;
-use undo_2::Action::*;
-use undo_2::Commands;
+use cosmic_undo_2::Action;
+use cosmic_undo_2::Action::*;
+use cosmic_undo_2::Commands;
 #[test]
 #[allow(unused)]
 fn application() {
@@ -196,9 +196,9 @@ fn command_sequence() {
 #[test]
 fn merge() {
     use std::ops::ControlFlow;
-    use undo_2::CommandItem;
-    use undo_2::IterRealized;
-    use undo_2::Merge;
+    use cosmic_undo_2::CommandItem;
+    use cosmic_undo_2::IterRealized;
+    use cosmic_undo_2::Merge;
     #[derive(Eq, PartialEq, Debug)]
     enum Command {
         A,
