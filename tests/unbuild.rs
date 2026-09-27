@@ -1,5 +1,5 @@
 #![allow(unused)]
-use undo_2::Commands;
+use cosmic_undo_2::Commands;
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {

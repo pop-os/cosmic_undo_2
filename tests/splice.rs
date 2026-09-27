@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use std::ops::ControlFlow;
-use undo_2::*;
+use cosmic_undo_2::*;
 
 #[derive(PartialEq, Debug)]
 enum Command {

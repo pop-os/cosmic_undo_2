@@ -309,6 +309,17 @@ impl<T> Commands<T> {
             None => ActionIter::new(),
         }
     }
+
+    // Checks that we can undo the an action.
+    pub fn can_undo(&self) -> bool {
+        let l = self.len();
+        match self.commands.last() {
+            Some(CommandItem::Command(_)) => true,
+            Some(CommandItem::Undo(i)) => *i + 2 < l,
+            None => false,
+        }
+    }
+
     /// An undo that skip undo branches.
     ///
     /// It returns the command that must be undone.
@@ -431,6 +442,14 @@ impl<T> Commands<T> {
                 }
             }
             _ => ActionIter::new(),
+        }
+    }
+    // Checks that we can redo the an action.
+    pub fn can_redo(&self) -> bool {
+        match self.commands.last() {
+            Some(CommandItem::Undo(_)) => true,
+            Some(_) => false,
+            None => false,
         }
     }
     /// Return an iterator over a sequence of actions to be performed by the client application to
